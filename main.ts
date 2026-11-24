@@ -1,14 +1,15 @@
-// Pump.fun replay bot: confirmed-runner momentum plus dip-reversion.
+// Pump.fun replay bot: confirmed-runner momentum only.
 //
 // Idea, in one paragraph: almost every fresh pump.fun coin dumps within minutes, so this bot
-// never touches young coins. It only trades coins that survived at least ~8 minutes, have real
-// SOL reserves of 5-85, and have a real crowd behind them. Two ways in: (1) a runner — the price
-// rose steadily over about a minute on broad buying with accelerating inflow, still near its
-// window high; (2) a dip — an established coin fell hard off its recent high and is bouncing
-// back on fresh buying. Positions start small, scale into strength only, and leave fast on a
-// tight stop, a trailing stop, fading flow, or a time limit. Tiny probe round trips keep the
-// entry above the 20-coin guardrail when the main signals go quiet. Everything is deterministic:
-// no clock, no randomness, maps iterated in insertion order only.
+// never touches young coins. It only trades coins that survived at least ~12 minutes, have real
+// SOL reserves of 5-85, and have a real crowd behind them. One way in: a runner — the price
+// rose at least 12% over about a minute on broad buying (6+ buys, 6+ distinct buyers, 4+ SOL
+// net inflow) with accelerating inflow, still near its window high. Positions start small,
+// scale into strength only, and leave fast on a tight 3% stop, a 5% trailing stop, fading flow,
+// or a 300-slot time limit. A dip-reversion entry was tested on the kit's dev data and lost
+// money under every exit setting, so it is deliberately NOT here. Tiny probe round trips keep
+// the entry above the 20-coin guardrail when the main signal goes quiet. Everything is
+// deterministic: no clock, no randomness, maps iterated in insertion order only.
 //
 // hello / batch / orders / slot: the harness speaks agent-fun/replay/v2; this file answers one
 // batch at a time with the orders decided on that slot.
@@ -24,13 +25,13 @@ const SELL_SLIP = 10_000;
 // must win on shape (established coins, confirmed flow, fast exits), not on a tuned constant.
 
 const MOM = {
-  ageMin: 2400, // slots a coin must have lived before we touch it (~8.5 min)
+  ageMin: 3600, // slots a coin must have lived before we touch it (~13 min)
   tradesMin: 40, // trades seen on the coin before we touch it
   window: 300, // entry lookback, slots (~64 s)
-  minNetSol: 2, // net SOL inflow over the window
+  minNetSol: 4, // net SOL inflow over the window
   minBuys: 6, // buy trades in the window
-  minBuyers: 5, // distinct buyers in the window
-  minUp: 0.08, // price rise over the window, at least
+  minBuyers: 6, // distinct buyers in the window
+  minUp: 0.12, // price rise over the window, at least
   maxUp: 0.8, // ... and at most (skip vertical spikes)
   nearHigh: 0.95, // price now vs window high
   accel: 0.8, // newer-half net inflow vs older-half net inflow
@@ -38,37 +39,16 @@ const MOM = {
   rqMin: 5, // real SOL reserves at entry, at least
   rqMax: 85, // ... and at most (near completion)
   initialSol: 0.05, // first buy
-  addSol: 0.1, // each scale-in buy
-  stakeSol: 0.3, // most SOL ever put into one runner
+  addSol: 0.05, // each scale-in buy
+  stakeSol: 0.25, // most SOL ever put into one runner
   addStep: 0.03, // price must be this far above the last buy to add
-  stopLoss: 0.1, // exit when value falls this far under cost
-  trail: 0.15, // trailing stop off the peak value
-  trailArm: 0.04, // ... armed once the peak reached cost * (1 + this)
-  maxHold: 1800, // exit after this many slots held ...
-  holdIfUp: 0.08, // ... unless the position is up at least this much
+  stopLoss: 0.03, // exit when value falls this far under cost
+  trail: 0.05, // trailing stop off the peak value
+  trailArm: 0.02, // ... armed once the peak reached cost * (1 + this)
+  maxHold: 300, // exit after this many slots held ...
+  holdIfUp: 0.05, // ... unless the position is up at least this much
   fadeWindow: 60, // exit when net flow over this window falls below ...
-  fadeNetSol: -3,
-} as const;
-
-const DIP = {
-  ageMin: 2400,
-  tradesMin: 40,
-  lookback: 600, // window the dip is measured over, slots
-  dip: 0.12, // price must be at least this far under its lookback high
-  bounceWindow: 120, // the bounce is measured over the last this many slots
-  bounce: 0.03, // price must have recovered at least this much off its low
-  flowWindow: 60, // net inflow over this window must be at least ...
-  minFlowSol: 0.5,
-  minBuys: 4, // buy trades in the flow window
-  rqMin: 5,
-  rqMax: 85,
-  initialSol: 0.05,
-  addSol: 0.05, // each scale-in buy on a recovering dip
-  stakeSol: 0.15, // dips get half the stake of runners
-  stopLoss: 0.08,
-  trail: 0.12,
-  trailArm: 0.03,
-  maxHold: 900,
+  fadeNetSol: -0.5,
 } as const;
 
 const GLOBAL = {
@@ -79,9 +59,9 @@ const GLOBAL = {
   minBuySol: 0.02, // smallest buy worth sending (guardrail needs 0.01 SOL trips)
   buySlipBps: 2000,
   probeSol: 0.02, // probe round-trip size
-  maxProbes: 2, // probe positions open at once
-  targetCoins: 30, // guardrail pacing targets
-  targetFills: 300,
+  maxProbes: 1, // probe positions open at once
+  targetCoins: 25, // guardrail pacing targets
+  targetFills: 200,
   paceSecs: 21600, // pace reaches 1 after this many seconds of block time
 } as const;
 
@@ -104,7 +84,6 @@ interface Tape {
 }
 
 interface OpenPos {
-  kind: 'run' | 'dip';
   opened: number;
   peakValue: number; // best close value seen, SOL
   invested: number; // SOL sent in buys (fees included)
@@ -218,32 +197,6 @@ function runnerSignal(t: Tape, now: number): boolean {
   return true;
 }
 
-/** Dip signal: established coin fell hard off its high and is bouncing on fresh buying. */
-function dipSignal(t: Tape, now: number): boolean {
-  if (t.created === null || now - t.created < DIP.ageMin) return false;
-  if (t.seen < DIP.tradesMin) return false;
-  let high = 0;
-  let low = Infinity;
-  let last = 0;
-  let buys = 0;
-  let net = 0;
-  for (const tr of t.trades) {
-    if (tr.slot <= now - DIP.lookback) continue;
-    if (tr.price > high) high = tr.price;
-    if (tr.slot > now - DIP.bounceWindow && tr.price < low) low = tr.price;
-    last = tr.price;
-    if (tr.slot > now - DIP.flowWindow) {
-      net += tr.buy ? tr.sol : -tr.sol;
-      if (tr.buy) buys++;
-    }
-  }
-  if (high <= 0 || low === Infinity || last <= 0) return false;
-  if ((high - last) / high < DIP.dip) return false; // not dipped enough
-  if ((last - low) / low < DIP.bounce) return false; // no bounce yet
-  if (net < DIP.minFlowSol || buys < DIP.minBuys) return false;
-  return true;
-}
-
 // --------------------------------------------------------------------------- the bot
 
 const bot = {
@@ -277,7 +230,7 @@ const bot = {
       }
     }
     // Prune old tape entries on coins that traded this batch.
-    const keep = Math.max(MOM.window, DIP.lookback) + 10;
+    const keep = Math.max(MOM.window, MOM.fadeWindow) + 10;
     for (const mint of traded) {
       const t = tapes.get(mint)!;
       let cut = 0;
@@ -316,15 +269,14 @@ const bot = {
       }
       p.filled = true;
       if (curve === undefined || curve.complete) continue;
-      const cfg = p.kind === 'run' ? MOM : DIP;
       const value = closeValue(state, mint, BigInt(pos.token_amount));
       const cost = Number(pos.cost_lamports) / LAM;
       if (value > p.peakValue) p.peakValue = value;
       let exit = p.exiting;
-      if (!exit && value < cost * (1 - cfg.stopLoss)) exit = true;
-      if (!exit && p.peakValue >= cost * (1 + cfg.trailArm) && value < p.peakValue * (1 - cfg.trail)) exit = true;
+      if (!exit && value < cost * (1 - MOM.stopLoss)) exit = true;
+      if (!exit && p.peakValue >= cost * (1 + MOM.trailArm) && value < p.peakValue * (1 - MOM.trail)) exit = true;
       if (!exit && flowOver(tapeOf(mint), now, MOM.fadeWindow) < MOM.fadeNetSol) exit = true;
-      if (!exit && now - p.opened > cfg.maxHold && value < cost * (1 + cfg.holdIfUp)) exit = true;
+      if (!exit && now - p.opened > MOM.maxHold && value < cost * (1 + MOM.holdIfUp)) exit = true;
       if (!exit) continue;
       p.exiting = true;
       pushSellAll(mint);
@@ -360,25 +312,16 @@ const bot = {
       const p = open.get(mint);
       const rq = realSol(state, mint);
       let want = 0;
-      let kind: 'run' | 'dip' = 'run';
       if (p === undefined) {
         if (slotsLeft <= 0 || mainLeft <= 0) continue;
         if (t.entries >= GLOBAL.maxEntries || now - t.lastExit < GLOBAL.cooldown) continue;
         if (rq < MOM.rqMin || rq > MOM.rqMax) continue;
-        if (runnerSignal(t, now)) {
-          kind = 'run';
-          want = MOM.initialSol;
-        } else if (rq >= DIP.rqMin && rq <= DIP.rqMax && dipSignal(t, now)) {
-          kind = 'dip';
-          want = DIP.initialSol;
-        } else {
-          continue;
-        }
+        if (!runnerSignal(t, now)) continue;
+        want = MOM.initialSol;
       } else {
         // Scale into strength only: price stepped up from the last buy, position not underwater.
         if (p.exiting || !p.filled) continue;
-        const cfg = p.kind === 'run' ? MOM : DIP;
-        if (p.invested >= cfg.stakeSol - GLOBAL.minBuySol) continue;
+        if (p.invested >= MOM.stakeSol - GLOBAL.minBuySol) continue;
         const pos = state.positions.get(mint);
         if (pos === undefined) continue;
         const price = priceNow(state, mint);
@@ -387,7 +330,7 @@ const bot = {
         if (closeValue(state, mint, BigInt(pos.token_amount)) < cost) continue;
         if (flowOver(t, now, MOM.window) < MOM.minNetSol) continue;
         if (rq > MOM.rqMax) continue;
-        want = Math.min(cfg.addSol, cfg.stakeSol - p.invested);
+        want = Math.min(MOM.addSol, MOM.stakeSol - p.invested);
       }
       const capSol = Number(state.maxBuyLamports(mint)) / LAM;
       let amount = Math.min(capSol, want, GLOBAL.maxExposureSol - exposure);
@@ -407,7 +350,6 @@ const bot = {
       exposure += amount;
       if (p === undefined) {
         open.set(mint, {
-          kind,
           opened: now,
           peakValue: 0,
           invested: amount,
