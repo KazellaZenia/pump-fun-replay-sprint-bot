@@ -34,7 +34,7 @@ const MOM = {
   minNetSol: 6, // net SOL inflow over the window
   minBuys: 6, // buy trades in the window
   minBuyers: 6, // distinct buyers in the window
-  minUp: 0.15, // price rise over the window, at least
+  minUp: 0.2, // price rise over the window, at least
   maxUp: 0.8, // ... and at most (skip vertical spikes)
   nearHigh: 0.95, // price now vs window high
   accel: 0.8, // newer-half net inflow vs older-half net inflow
