@@ -391,6 +391,10 @@ const bot = {
       const capSol = Number(state.maxBuyLamports(mint)) / LAM;
       let amount = Math.min(capSol, want, GLOBAL.maxExposureSol - exposure);
       if (amount > free - txSol) amount = free - txSol;
+      if (!Number.isFinite(amount)) {
+        console.error(`nan-amount slot=${now} mint=${mint} capSol=${capSol} want=${want} exposure=${exposure} free=${free} txSol=${txSol}`);
+        continue;
+      }
       if (amount < GLOBAL.minBuySol) continue;
       orders.push({
         side: 'buy',
