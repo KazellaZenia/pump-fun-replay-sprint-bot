@@ -42,7 +42,7 @@ const MOM = {
   addSol: 0.05, // each scale-in buy
   stakeSol: 0.25, // most SOL ever put into one runner
   addStep: 0.03, // price must be this far above the last buy to add
-  stopLoss: 0.03, // exit when value falls this far under cost
+  stopLoss: 0.04, // exit when value falls this far under cost (value is fee-loaded: a 4% value stop is roughly a 1.5% price stop)
   trail: 0.05, // trailing stop off the peak value
   trailArm: 0.02, // ... armed once the peak reached cost * (1 + this)
   maxHold: 300, // exit after this many slots held ...
@@ -57,7 +57,7 @@ const GLOBAL = {
   cooldown: 200, // slots to wait after an exit before re-entering the same coin
   maxEntries: 3, // most entries per coin over the whole run
   minBuySol: 0.02, // smallest buy worth sending (guardrail needs 0.01 SOL trips)
-  buySlipBps: 2000,
+  buySlipBps: 500, // reject a buy whose fill price ran more than 5% past the decision price
   probeSol: 0.02, // probe round-trip size
   maxProbes: 1, // probe positions open at once
   targetCoins: 25, // guardrail pacing targets
@@ -375,7 +375,7 @@ const bot = {
         for (const mint of traded) {
           if (orders.length >= cap || probes.size >= GLOBAL.maxProbes) break;
           if (open.has(mint) || probes.has(mint) || pendingByMint.has(mint) || state.positions.has(mint)) continue;
-          if (needCoins && !needFills && myCoins.has(mint)) continue;
+          if (myCoins.has(mint)) continue; // a probe always opens a NEW coin; never re-probe one
           const curve = state.curves.get(mint);
           if (curve === undefined || curve.complete) continue;
           const t = tapes.get(mint)!;
