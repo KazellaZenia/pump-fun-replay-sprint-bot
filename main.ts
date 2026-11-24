@@ -63,6 +63,7 @@ const DIP = {
   rqMin: 5,
   rqMax: 85,
   initialSol: 0.05,
+  addSol: 0.05, // each scale-in buy on a recovering dip
   stakeSol: 0.15, // dips get half the stake of runners
   stopLoss: 0.08,
   trail: 0.12,
