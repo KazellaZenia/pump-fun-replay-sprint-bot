@@ -3,13 +3,16 @@
 // Idea, in one paragraph: almost every fresh pump.fun coin dumps within minutes, so this bot
 // never touches young coins. It only trades coins that survived at least ~12 minutes, have real
 // SOL reserves of 5-85, and have a real crowd behind them. One way in: a runner — the price
-// rose at least 12% over about a minute on broad buying (6+ buys, 6+ distinct buyers, 4+ SOL
+// rose at least 15% over about a minute on broad buying (6+ buys, 6+ distinct buyers, 6+ SOL
 // net inflow) with accelerating inflow, still near its window high. Positions start small,
-// scale into strength only, and leave fast on a tight 3% stop, a 5% trailing stop, fading flow,
-// or a 300-slot time limit. A dip-reversion entry was tested on the kit's dev data and lost
-// money under every exit setting, so it is deliberately NOT here. Tiny probe round trips keep
-// the entry above the 20-coin guardrail when the main signal goes quiet. Everything is
-// deterministic: no clock, no randomness, maps iterated in insertion order only.
+// scale into strength only, and leave on a 6% value stop, a 12% trailing stop, fading flow,
+// or a 300-slot time limit (extended while the position is up 5%+). Two findings from the
+// kit's dev data shaped this: (1) fills land 2 slots after the decision, after the last trade
+// of that slot, so bursts are already over when a reactive buy fills — entries must therefore
+// be strict and exits roomy enough to survive the fill noise; (2) a dip-reversion entry lost
+// money under every exit setting tested, so it is deliberately NOT here. Tiny probe round
+// trips keep the entry above the 20-coin guardrail when the main signal goes quiet. Everything
+// is deterministic: no clock, no randomness, maps iterated in insertion order only.
 //
 // hello / batch / orders / slot: the harness speaks agent-fun/replay/v2; this file answers one
 // batch at a time with the orders decided on that slot.
@@ -28,10 +31,10 @@ const MOM = {
   ageMin: 3600, // slots a coin must have lived before we touch it (~13 min)
   tradesMin: 40, // trades seen on the coin before we touch it
   window: 300, // entry lookback, slots (~64 s)
-  minNetSol: 4, // net SOL inflow over the window
+  minNetSol: 6, // net SOL inflow over the window
   minBuys: 6, // buy trades in the window
   minBuyers: 6, // distinct buyers in the window
-  minUp: 0.12, // price rise over the window, at least
+  minUp: 0.15, // price rise over the window, at least
   maxUp: 0.8, // ... and at most (skip vertical spikes)
   nearHigh: 0.95, // price now vs window high
   accel: 0.8, // newer-half net inflow vs older-half net inflow
@@ -41,9 +44,9 @@ const MOM = {
   initialSol: 0.05, // first buy
   addSol: 0.05, // each scale-in buy
   stakeSol: 0.25, // most SOL ever put into one runner
-  addStep: 0.03, // price must be this far above the last buy to add
-  stopLoss: 0.04, // exit when value falls this far under cost (value is fee-loaded: a 4% value stop is roughly a 1.5% price stop)
-  trail: 0.05, // trailing stop off the peak value
+  addStep: 0.05, // price must be this far above the last buy to add
+  stopLoss: 0.06, // exit when value falls this far under cost (value is fee-loaded: a 6% value stop is roughly a 3.5% price stop)
+  trail: 0.12, // trailing stop off the peak value
   trailArm: 0.02, // ... armed once the peak reached cost * (1 + this)
   maxHold: 300, // exit after this many slots held ...
   holdIfUp: 0.05, // ... unless the position is up at least this much
